@@ -6,7 +6,174 @@ from astropy.coordinates import Distance
 from astropy.cosmology import Planck18
 from astropy import units as u
 import astropy.constants as asc
+from astropy.table import Table, hstack, vstack
+from astropy import table
 
+
+import psycopg2
+
+
+omega_sky = 41253 #
+
+# Calculating luminosities in different bands
+# However, since we only look at the z-band we need to correct the solar luminosity
+# Calculation from here: https://astronomy.stackexchange.com/questions/25126/how-to-calculate-luminosity-in-g-band-from-absolute-ab-magnitude-and-luminosity
+lmbda_z = 920*10**(-9) #in  m
+del_lambda_z = 160*10**(-9) #in m
+del_v_z = (asc.c*lmbda_z/(del_lambda_z**2)).value # this is in /s now
+
+lmbda_r = 640*10**(-9) #in  m 5600A-7200A -> 6400A median
+del_lambda_r = 160*10**(-9) #in m
+del_v_r = (asc.c*lmbda_r/(del_lambda_r**2)).value # this is in /s now
+
+
+m_sun_z = -27.56 # in z-band: http://mips.as.arizona.edu/~cnaw/sun.html (DES filter)
+m_sun_r = -27.12 # in r-band: http://mips.as.arizona.edu/~cnaw/sun.html (DES filter)
+
+f_v_z = 10**((-48.6-m_sun_z)/2.5) # in erg/(cm^2 s Hz)
+f_v_r = 10**((-48.6-m_sun_r)/2.5) # in erg/(cm^2 s Hz)
+
+dist_sun = 1.496*10**13 # in cm
+
+L_sun_z = f_v_z*del_v_z*4*np.pi*dist_sun**2 *10**(-7) # this is  in Watts now
+L_sun_r = f_v_r*del_v_r*4*np.pi*dist_sun**2 *10**(-7)
+L_sun_bol = 3.828*10**26
+
+L_sun_bands = {"r": L_sun_r*u.W, "z": L_sun_z*u.W, "bol": L_sun_bol*u.W}
+
+std_names = ['TARGETID', 'TARGET_RA', 'TARGET_DEC', 'LASTNIGHT', 'Z', 'ZERR', 'ZWARN', 'FLUX_G', 'FLUX_R', 'FLUX_Z', 'SPECTYPE', 'BGS_TARGET', 'EBV', 'SERSIC']
+
+
+def connect_to_time_db():
+    """
+    connect to the desi daily SQL database
+    
+    Returns
+    -------
+        cursor: cursor object
+            cursor for the database
+    """
+    try:
+        db = psycopg2.connect(host='decatdb.lbl.gov', database='desidb', user='desi', password = "5kFibers!", port="5432")
+        cursor = db.cursor()
+        return cursor
+    except (Exception, psycopg2.Error) as error:
+        print("FAILED TO ESTABLISH CONNECTION TO DATABASE")
+        print("------------------------------------------")
+        print("Error log: ")
+        print(error)
+        
+def make_table(rows, names = std_names):
+    """
+    Creates an astropy data table with only good redshifts and only unique entries (takes the first)
+    
+    Parameters
+    ----------
+        rows: row object from cursor.fetchall() for example
+            contains the actual data from the sql database 
+        names: list
+            list of names for the columns (e.g. ["TARGET_RA", "TARGET_DEC"])
+            
+    Returns
+    -------
+        table: astropy table
+            returns an astropy table with the specified column names and only good redshifts; also ensures only unique entries exist and can return a table with no data, only column names
+    """
+    if rows:
+        data = Table(list(map(list, zip(*rows))),
+                             names=names)
+        
+        if len(data) > 0:
+            data = data[data['ZWARN']==0]
+            data = data[data['Z']>=0]
+            data = table.unique(data, keys = "TARGETID")
+        return data
+    else:
+        return Table(names = names)
+
+def make_list(rows, names = std_names):
+    """
+    Creates a numpy list from the sql rows
+    
+    Parameters
+    ----------
+        rows: row object from cursor.fetchall() for example
+            contains the actual data from the sql database
+            
+    Returns
+    -------
+        data: python list
+            returns a python list without any data clean up
+    """
+    
+    if rows:
+        data = list(map(list, zip(*rows)))
+        return data
+    
+
+def get_data_rad_search(ra, dec, radius, cursor, query=None):
+    
+    """
+    Queries data from the database; a standard query is implemented, but can be altered
+    Parameters
+    ----------
+        ra: int/float
+            right ascension of the center for the circular search
+        dec: int/float
+            declination of the center of the circular search
+        radius: int/float
+            search radius
+        cursors: db.cursor()
+            cursors object from the database
+        query (optional): str
+            the query string (i.e. what data to retrieve from the database
+    
+    Returns
+    -------
+        rows: row object from database
+            contains the actual information. use make_table() to convert to astropy table
+            
+    """
+    redux = "daily"
+    if query == None:
+        query = 'SELECT f.targetid, f.target_ra, f.target_dec, c.night, r.z, r.zerr, r.zwarn, f.flux_r, f.flux_g, f.flux_z, r.spectype, f.bgs_target, f.ebv, f.sersic\n' \
+                    f'FROM {redux}.tiles_fibermap f\n' \
+                    f'INNER JOIN {redux}.cumulative_tiles c ON f.cumultile_id=c.id\n' \
+                    f'INNER JOIN {redux}.tiles_redshifts r ON r.cumultile_id=c.id AND r.targetid=f.targetid\n' \
+                    f'WHERE q3c_radial_query( f.target_ra, f.target_dec, {ra}, {dec}, {radius});'
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    return rows
+       
+def db_doall(ra, dec, radius, names = std_names, query=None):
+    
+    """
+    Do all steps to retrieve data from the database. A standard query is provided, but can be changed
+    
+    Parameters
+    ----------
+        ra: int/float
+            right ascension of the center for the circular search
+        dec: int/float
+            declination of the center of the circular search
+        radius: int/float
+            search radius
+        names (optional): list
+            list of names for the columns (e.g. ["TARGET_RA", "TARGET_DEC"])
+        query (optional): str
+            the query string (i.e. what data to retrieve from the database
+    Returns
+    -------
+        table: astropy table
+            returns the data table with only good redshift objects and unique entries
+    """
+    
+    cursor = connect_to_time_db()
+    rows = get_data_rad_search(ra, dec, radius, cursor, query)
+    table = make_table(rows, names)
+    return table
+    
+    
 def gal_ext(sky_coords):
     
     """
@@ -42,45 +209,29 @@ def abs_mag(m, z, band, color_name, color):
     #return m - 5*np.log10(Distance(z=z, cosmology=Planck18)/u.Mpc*10**6)+5 - calc_kcor(band, z, color_name, color)
     return m - 5*np.log10(Distance(z=z, cosmology=Planck18)/u.Mpc*10**6)+5
 
-# Calculating luminosities in different bands
-# However, since we only look at the z-band we need to correct the solar luminosity
-# Calculation from here: https://astronomy.stackexchange.com/questions/25126/how-to-calculate-luminosity-in-g-band-from-absolute-ab-magnitude-and-luminosity
-lmbda_z = 920*10**(-9) #in  m
-del_lambda_z = 160*10**(-9) #in m
-del_v_z = (asc.c*lmbda_z/(del_lambda_z**2)).value # this is in /s now
-
-lmbda_r = 640*10**(-9) #in  m 5600A-7200A -> 6400A median
-del_lambda_r = 160*10**(-9) #in m
-del_v_r = (asc.c*lmbda_r/(del_lambda_r**2)).value # this is in /s now
-
-
-m_sun_z = -27.56 # in z-band: http://mips.as.arizona.edu/~cnaw/sun.html (DES filter)
-m_sun_r = -27.12 # in r-band: http://mips.as.arizona.edu/~cnaw/sun.html (DES filter)
-
-f_v_z = 10**((-48.6-m_sun_z)/2.5) # in erg/(cm^2 s Hz)
-f_v_r = 10**((-48.6-m_sun_r)/2.5) # in erg/(cm^2 s Hz)
-
-dist_sun = 1.496*10**13 # in cm
-
-L_sun_z = f_v_z*del_v_z*4*np.pi*dist_sun**2 *10**(-7) # this is  in Watts now
-L_sun_r = f_v_r*del_v_r*4*np.pi*dist_sun**2 *10**(-7)
-# the value is roughly half of the full bolometric value... not sure if this makes sense
-
-def lum_z(M):
+def M(L, band = "bol"):
+    
     """
-    Get the luminosity in the z-band
+    Calculates the absolute magnitude from the luminosity
+    One can specify a band or just use the bolometric value without specifiyng a band
+    Input:
+    - L: luminosity in Watts (u.W)
+    - band: "g", "r", "z" for example or specify nothing for bolometric
+    """
+    
+    L_sun = L_sun_bands[band]
+    
+    return -2.5*np.log10(L/(L_sun))
+
+
+def lum(M, band = "bol"):
+    """
+    Get the luminosity in watts
     Input:
     - absolute magnitude M in this band
     """
-    return L_sun_z*10**(-0.4*M)*u.W
-
-def lum_r(M):
-    """
-    Get the luminosity in the r-band
-    Input:
-    - absolute magnitude M in this band
-    """
-    return L_sun_r*10**(-0.4*M)*u.W
+    L_sun = L_sun_bands[band]
+    return L_sun*10**(-0.4*M)
 
 def lum_wiggle(D_gal, m):
     """
@@ -94,7 +245,7 @@ def lum_wiggle(D_gal, m):
     return D_gal**2*10**(-0.4*m)
 
 
-def V_max(omega_s, z_min, z_max_lum):
+def V_max(omega_s, z_min, z_max_data, z_max_lum):
     """
     Description: Calculates the maximum Volume in which the source could have been detected in: corrects for the so-called "Malmquist-bias"
     (faint objects, which usually also means low mass objects, will only be covered in a survey within a smaller volume than bright and high-mass
