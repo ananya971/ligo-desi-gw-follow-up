@@ -43,6 +43,7 @@ L_sun_bands = {"r": L_sun_r*u.W, "z": L_sun_z*u.W, "bol": L_sun_bol*u.W}
 
 std_names = ['TARGETID', 'TARGET_RA', 'TARGET_DEC', 'LASTNIGHT', 'Z', 'ZERR', 'ZWARN', 'FLUX_G', 'FLUX_R', 'FLUX_Z', 'SPECTYPE', 'BGS_TARGET', 'EBV', 'SERSIC']
 
+ext_coeffs =  [3.995, 3.214, 2.165, 1.592, 1.211, 1.064] # for the DECam 𝑢, 𝑔, 𝑟, 𝑖, 𝑧, 𝑌 
 
 def connect_to_time_db():
     """
