@@ -45,6 +45,135 @@ std_names = ['TARGETID', 'TARGET_RA', 'TARGET_DEC', 'LASTNIGHT', 'Z', 'ZERR', 'Z
 
 ext_coeffs =  [3.995, 3.214, 2.165, 1.592, 1.211, 1.064] # for the DECam 𝑢, 𝑔, 𝑟, 𝑖, 𝑧, 𝑌 
 
+"""
+The first two functions following here are actually copied from https://github.com/desihub/desiutil/blob/a15f4f98214d14ad05e740d68f333994dfa1f1f8/py/desiutil/dust.py#L22
+so be careful!
+"""
+
+def extinction_total_to_selective_ratio(band, photsys, match_legacy_surveys=False):
+    """Return the linear coefficient R_X = A(X)/E(B-V) where
+    A(X) = -2.5*log10(transmission in X band),
+    for band X in 'G','R' or 'Z' when
+    photsys = 'N' or 'S' specifies the survey (BASS+MZLS or DECALS),
+    or for band X in 'G', 'BP', 'RP' when photsys = 'G' (when gaia dr2)
+    or for band X in 'W1', 'W2', 'W3', 'W4' when photsys is either 'N' or 'S'
+    E(B-V) is interpreted as SFD.
+    Args:
+        band : 'G', 'R', 'Z', 'BP', 'RP', 'W1', 'W2', 'W3', or 'W4'
+        photsys : 'N' or 'S'
+    Returns:
+        scalar, total extinction A(band) = -2.5*log10(transmission(band))
+    """
+    if match_legacy_surveys:
+        # Based on the fit from the columns MW_TRANSMISSION_X and EBV
+        # for the DR8 target catalogs and propagated in fibermaps
+        # R_X = -2.5*log10(MW_TRANSMISSION_X) / EBV
+        # It is the same value for the N and S surveys in DR8 and DR9 catalogs.
+        R = {"G_N": 3.2140,
+             "R_N": 2.1650,
+             "Z_N": 1.2110,
+             "G_S": 3.2140,
+             "R_S": 2.1650,
+             "Z_S": 1.2110,
+             "G_G": 2.512,
+             "BP_G": 3.143,
+             "RP_G": 1.663}
+    else:
+        # From https://desi.lbl.gov/trac/wiki/ImagingStandardBandpass
+        # DECam u  3881.6   3.994
+        # DECam g  4830.8   3.212
+        # DECam r  6409.0   2.164
+        # DECam i  7787.5   1.591
+        # DECam z  9142.7   1.211
+        # DECam Y  9854.5   1.063
+        # BASS g  4772.1   3.258
+        # BASS r  6383.6   2.176
+        # MzLS z  9185.1   1.199
+        # Consistent with the synthetic magnitudes and function dust_transmission
+
+        R = {"G_N": 3.258,
+             "R_N": 2.176,
+             "Z_N": 1.199,
+             "G_S": 3.212,
+             "R_S": 2.164,
+             "Z_S": 1.211,
+             "G_G": 2.197,
+             "BP_G": 2.844,
+             "RP_G": 1.622}
+
+    # Add WISE from
+    # https://github.com/dstndstn/tractor/blob/main/tractor/sfd.py#L23-L35
+    R.update({'W1_N': 0.184,
+              'W2_N': 0.113,
+              'W3_N': 0.0241,
+              'W4_N': 0.00910,
+              'W1_S': 0.184,
+              'W2_S': 0.113,
+              'W3_S': 0.0241,
+              'W4_S': 0.00910})
+
+    assert band.upper() in ["G", "R", "Z", "BP", "RP", 'W1', 'W2', 'W3', 'W4']
+    assert photsys.upper() in ["N", "S", "G"]
+    return R["{}_{}".format(band.upper(), photsys.upper())]
+
+
+def mwdust_transmission(ebv, band, photsys, match_legacy_surveys=False):
+    """Convert SFD E(B-V) value to dust transmission 0-1 for band and photsys
+    Args:
+        ebv (float or array-like): SFD E(B-V) value(s)
+        band (str): 'G', 'R', 'Z', 'W1', 'W2', 'W3', or 'W4'
+        photsys (str or array of str): 'N' or 'S' imaging surveys photo system
+    Returns:
+        scalar or array (same as ebv input), Milky Way dust transmission 0-1
+    If `photsys` is an array, `ebv` must also be array of same length.
+    However, `ebv` can be an array with a str `photsys`.
+    Also see `dust_transmission` which returns transmission vs input wavelength
+    """
+    if isinstance(photsys, str):
+        r_band = extinction_total_to_selective_ratio(band, photsys, match_legacy_surveys=match_legacy_surveys)
+        a_band = r_band * ebv
+        transmission = 10**(-a_band / 2.5)
+        return transmission
+    else:
+        photsys = np.asarray(photsys)
+        if np.isscalar(ebv):
+            raise ValueError('array photsys requires array ebv')
+        if len(ebv) != len(photsys):
+            raise ValueError('len(ebv) {} != len(photsys) {}'.format(
+                len(ebv), len(photsys)))
+
+        transmission = np.zeros(len(ebv))
+        for p in np.unique(photsys):
+            ii = (photsys == p)
+            r_band = extinction_total_to_selective_ratio(band, p, match_legacy_surveys=match_legacy_surveys)
+            a_band = r_band * ebv[ii]
+            transmission[ii] = 10**(-a_band / 2.5)
+
+        return transmission
+
+def mw_transmission_from_data_table(data, band):
+    
+    """
+    Automatically calculate the MW_TRANSMISSION values from normal data table I use.
+    
+    Parameters:
+    -----------
+        data: astropy.table
+            the normal astropy table I use (needs TARGET_DEC and EBV values
+        band: string ("g", "r", "z")
+            the photometric band to use
+    
+    Returns:
+    --------
+        MW_TRANSMISSION: np.array
+            returns a numpy array that contains the milky way transmission values"""
+    
+    photsys = np.array(["N" for q in range(len(data))])
+    ii = np.where(data["TARGET_DEC"] < 0)
+    photsys[ii] = "S"
+    
+    return mwdust_transmission(data["EBV"], band, photsys, match_legacy_surveys=False)
+
 def connect_to_time_db():
     """
     connect to the desi daily SQL database
@@ -137,7 +266,7 @@ def get_data_rad_search(ra, dec, radius, cursor, query=None):
     """
     redux = "daily"
     if query == None:
-        query = 'SELECT f.targetid, f.target_ra, f.target_dec, c.night, r.z, r.zerr, r.zwarn, f.flux_r, f.flux_g, f.flux_z, r.spectype, f.bgs_target, f.ebv, f.sersic\n' \
+        query = 'SELECT f.targetid, f.target_ra, f.target_dec, c.night, r.z, r.zerr, r.zwarn, f.flux_g,  f.flux_r, f.flux_z, r.spectype, f.bgs_target, f.ebv, f.sersic\n' \
                     f'FROM {redux}.tiles_fibermap f\n' \
                     f'INNER JOIN {redux}.cumulative_tiles c ON f.cumultile_id=c.id\n' \
                     f'INNER JOIN {redux}.tiles_redshifts r ON r.cumultile_id=c.id AND r.targetid=f.targetid\n' \
@@ -173,17 +302,6 @@ def db_doall(ra, dec, radius, names = std_names, query=None):
     rows = get_data_rad_search(ra, dec, radius, cursor, query)
     table = make_table(rows, names)
     return table
-    
-    
-def gal_ext(sky_coords):
-    
-    """
-    Calculate the galactic extinction for an object, to be used in the flux correction
-    Not yet implemented, and might never be implemented, unless needed
-    """
-    
-    return 1
-
 
 def app_mag(flux, mw_transmission=1):
     """
@@ -260,7 +378,7 @@ def V_max(omega_s, z_min, z_max_data, z_max_lum):
     
     """
     z_max = np.minimum(z_max_data, z_max_lum)
-    return 4/3*np.pi * omega_s/omega_sky * (Distance(z=z_max, cosmology=Planck18)**3-Distance(z=z_min, cosmology=Planck18)**3)
+    return 4/3*np.pi * omega_s/omega_sky * (Planck18.comoving_distance(z_max)**3-Planck18.comoving_distance(z_min)**3)
 
 
 def lum_lim(lum, m_lim, m):
@@ -273,7 +391,7 @@ def lum_lim(lum, m_lim, m):
     - m: apparent magnitude of an object
     
     """
-    return lum*10**(-0.4*(m_lim-m))
+    return lum*10**(0.4*(m-m_lim))
 
 
 
