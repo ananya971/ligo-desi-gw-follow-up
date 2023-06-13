@@ -328,6 +328,11 @@ def abs_mag(m, z, band, color_name, color):
     #return m - 5*np.log10(Distance(z=z, cosmology=Planck18)/u.Mpc*10**6)+5 - calc_kcor(band, z, color_name, color)
     return m - 5*np.log10(Distance(z=z, cosmology=Planck18)/u.Mpc*10**6)+5
 
+def abs_mag_ldist(m, dist):
+    return m - 5*np.log10(dist)+5
+    
+    
+
 def M(L, band = "bol"):
     
     """
@@ -380,6 +385,18 @@ def V_max(omega_s, z_min, z_max_data, z_max_lum):
     z_max = np.minimum(z_max_data, z_max_lum)
     return 4/3*np.pi * omega_s/omega_sky * (Planck18.comoving_distance(z_max)**3-Planck18.comoving_distance(z_min)**3)
 
+def V_max_dist(omega_s, dist_min, dist_max_data, dist_max_lum):
+    """
+    Description: Calculates the maximum Volume in which the source could have been detected in: corrects for the so-called "Malmquist-bias"
+    (faint objects, which usually also means low mass objects, will only be covered in a survey within a smaller volume than bright and high-mass
+    objects)
+    
+    Params:
+    omega_s: surface area covered by the complete data
+    ...
+    """
+    dist_max = np.minimum(dist_max_data, dist_max_lum)
+    return 4/3*np.pi * omega_s/omega_sky * (dist_max**3-dist_min**3)
 
 def lum_lim(lum, m_lim, m):
     """
