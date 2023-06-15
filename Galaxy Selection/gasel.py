@@ -331,7 +331,10 @@ def abs_mag(m, z, band, color_name, color):
 def abs_mag_ldist(m, dist):
     return m - 5*np.log10(dist)+5
     
-    
+# define schecher luminosity function
+def schechter_lum(L, phi_star, L_star, alpha):
+    return phi_star*(L/L_star)**(alpha)*unumpy.exp(-L/L_star)
+
 
 def M(L, band = "bol"):
     
