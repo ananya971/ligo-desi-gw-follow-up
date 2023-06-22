@@ -9,6 +9,8 @@ import astropy.constants as asc
 from astropy.table import Table, hstack, vstack
 from astropy import table
 
+from uncertainties import unumpy
+
 
 import psycopg2
 
@@ -330,6 +332,9 @@ def abs_mag(m, z, band, color_name, color):
 
 def abs_mag_ldist(m, dist):
     return m - 5*np.log10(dist)+5
+
+def app_mag_ldist(M, dist):
+    return M + 5*np.log10(dist) - 5
     
 # define schecher luminosity function
 def schechter_lum(L, phi_star, L_star, alpha):
